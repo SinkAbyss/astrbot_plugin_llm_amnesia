@@ -9,10 +9,10 @@ import json
 
 @register(
     "llm_amnesia",
-    "NigthStar",
+    "SinkAbyss",
     "当您不满意大模型的回复时，使用 /forget 指令，让它“忘记”最近的N轮对话，以便您重新提问并获得更好的回答。",
     "1.1.5",
-    "https://github.com/NigthStar/astrbot_plugin_llm_amnesia"
+    "https://github.com/SinkAbyss/astrbot_plugin_llm_amnesia"
 )
 class ForgetPlugin(Star):
     def __init__(self, context: Context):
