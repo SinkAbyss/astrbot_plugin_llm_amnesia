@@ -150,52 +150,65 @@ class ForgetPlugin(Star):
                 logger.info(f"对话历史不足 {round_count} 轮: 当前有 {len(conversation_history)//2} 轮")
                 yield event.plain_result(f"对话历史不足 {round_count} 轮，当前只有 {len(conversation_history)//2} 轮对话 ❌")
                 return
-
-            # --- 重构核心区域开始 ---
-
-            # 1. 使用单个循环查找并备份要删除的对话
+            
+            # 查找指定数量的对话轮次
             deleted_messages = []
-            # 从后往前遍历，步长为2，因为我们总是成对查找
-            for i in range(len(conversation_history) - 2, -1, -2):
-                if len(deleted_messages) // 2 >= round_count:
-                    break # 已找到足够轮次
-
-                user_msg = conversation_history[i]
-                assistant_msg = conversation_history[i+1]
-
-                if user_msg.get("role") == "user" and assistant_msg.get("role") == "assistant":
-                    # 找到一轮对话，将其添加到备份列表的开头以保持原始顺序
-                    deleted_messages.insert(0, user_msg)
-                    deleted_messages.insert(0, assistant_msg)
-                else:
-                    # 如果对话历史末尾不是严格的 user/assistant 配对，立即停止以防误删
-                    logger.warning(f"对话历史在索引 {i} 处顺序异常，停止查找。")
+            found_rounds = 0
+            
+            # 从后往前查找指定数量的对话轮次
+            for i in range(len(conversation_history) - 1, 0, -1):
+                if found_rounds >= round_count:
                     break
-
+                    
+                current_msg = conversation_history[i]
+                prev_msg = conversation_history[i-1]
+                
+                if (current_msg.get("role") == "assistant" and 
+                    prev_msg.get("role") == "user"):
+                    # 找到一轮对话，添加到删除列表（从后往前添加）
+                    deleted_messages.insert(0, current_msg)
+                    deleted_messages.insert(0, prev_msg)
+                    found_rounds += 1
+            
             if not deleted_messages:
                 logger.info("没有找到可删除的对话轮次")
                 yield event.plain_result("没有找到可遗忘的对话轮次 ❌")
                 return
-
-            # 2. 使用列表切片简化删除操作
-            num_to_delete = len(deleted_messages)
-            new_conversation_history = conversation_history[:-num_to_delete]
-
-            # --- 重构核心区域结束 ---
-
+            
             # 保存被删除的对话用于反悔
             if unified_msg_origin not in self.deleted_conversations:
                 self.deleted_conversations[unified_msg_origin] = {}
             
             self.deleted_conversations[unified_msg_origin][user_id] = (
-                deleted_messages, # 这里直接使用 deleted_messages，因为它已经是副本
+                deleted_messages.copy(), 
                 conversation.cid,
                 datetime.now(),
                 round_count
             )
             
+            # 删除指定数量的对话轮次
+            new_conversation_history = conversation_history.copy()
+            
+            # 按位置从后往前删除，避免索引变化问题
+            deleted_positions = []
+            for i in range(len(conversation_history) - 1, 0, -1):
+                if len(deleted_positions) >= len(deleted_messages):
+                    break
+                current_msg = conversation_history[i]
+                prev_msg = conversation_history[i-1]
+                if (current_msg.get("role") == "assistant" and 
+                    prev_msg.get("role") == "user"):
+                    deleted_positions.append(i)
+                    deleted_positions.append(i-1)
+                    if len(deleted_positions) >= len(deleted_messages):
+                        break
+            
+            for pos in sorted(deleted_positions, reverse=True):
+                if pos < len(new_conversation_history):
+                    del new_conversation_history[pos]
+            
             logger.info(f"删除对话: 原始长度 {len(conversation_history)} -> 新长度 {len(new_conversation_history)}")
-            logger.info(f"删除了 {round_count} 轮对话，共 {num_to_delete} 条消息")
+            logger.info(f"删除了 {round_count} 轮对话，共 {len(deleted_messages)} 条消息")
             
             # 更新对话历史
             await conv_mgr.update_conversation(
