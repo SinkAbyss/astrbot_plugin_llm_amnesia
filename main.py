@@ -11,7 +11,7 @@ import json
     "llm_amnesia",
     "NigthStar",
     "当您不满意大模型的回复时，使用 /forget 指令，让它“忘记”最近的N轮对话，以便您重新提问并获得更好的回答。",
-    "1.1.1",
+    "1.1.2",
     "https://github.com/NigthStar/astrbot_plugin_llm_amnesia"
 )
 class ForgetPlugin(Star):
@@ -68,6 +68,14 @@ class ForgetPlugin(Star):
         2. 如果用户发送新消息，说明他们不再需要恢复
         3. 自动清除删除记录，防止误操作
         """
+        # 根据 AstrBot 文档，从 event 对象中获取纯文本消息
+        # 在执行清理前，检查消息是否为本插件的管理指令，如果是则跳过，让指令处理器接管
+        message_text = event.message_str.strip()
+        plugin_commands = ["/cancel_forget", "/forget_status", "/forget_help", "/forget"]
+        
+        # 如果消息以插件的任一指令开头，则不执行清理逻辑
+        if any(message_text.startswith(cmd) for cmd in plugin_commands):
+            return
         unified_msg_origin = event.unified_msg_origin
         user_id = event.get_sender_id()
         
