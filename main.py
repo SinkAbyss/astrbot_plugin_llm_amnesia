@@ -22,7 +22,7 @@ class DeletedRecord:
     "llm_amnesia",
     "SinkAbyss",
     "当您不满意大模型的回复时，使用 /forget 指令，让它“忘记”最近的N轮对话，以便您重新提问并获得更好的回答。",
-    "1.1.6",
+    "1.1.7",
     "https://github.com/SinkAbyss/astrbot_plugin_llm_amnesia"
 )
 class ForgetPlugin(Star):
@@ -119,28 +119,29 @@ class ForgetPlugin(Star):
                 yield event.plain_result("对话历史格式异常，无法操作 ❌")
                 return
 
-            if len(conversation_history) < round_count * 2:
-                yield event.plain_result(f"对话历史不足 {round_count} 轮 ❌")
+            if not isinstance(conversation_history, list):
+                yield event.plain_result("对话历史不是消息列表，无法操作 ❌")
                 return
-            
-            # 查找切割点（倒序查找）
-            split_index = len(conversation_history)
-            rounds_found = 0
-            for i in range(len(conversation_history) - 1, 0, -2):
-                # 确保是字典类型
-                msg_curr = conversation_history[i]
-                msg_prev = conversation_history[i-1]
-                
-                if isinstance(msg_curr, dict) and isinstance(msg_prev, dict) and msg_curr.get("role") == "assistant" and msg_prev.get("role") == "user":
-                    rounds_found += 1
-                    if rounds_found == round_count:
-                        split_index = i - 1
-                        break
-            
-            if split_index == len(conversation_history):
-                yield event.plain_result(f"只找到了 {rounds_found} 轮可遗忘的对话 ❌")
+
+            # 每条 user 都是一轮的起点，下一条 user 会开启新一轮。
+            # 不能只追踪 assistant：/stop 后可能没有对应的 assistant，例如：
+            # user(问题1), assistant(回复1), user(问题1.5，被停止), user(问题2)。
+            # 若按 assistant 向前找 user，会把 问题1.5 错误黏到“问题1/回复1”一起删除。
+            # 按 user 起点切割后，未完成/被停止的提问也能成为独立的一轮。
+            user_indices = [
+                i
+                for i, message in enumerate(conversation_history)
+                if isinstance(message, dict) and message.get("role") == "user"
+            ]
+
+            if len(user_indices) < round_count:
+                yield event.plain_result(
+                    f"只找到了 {len(user_indices)} 轮对话，无法遗忘第 {round_count} 轮 ❌"
+                )
                 return
-            
+
+            split_index = user_indices[-round_count]
+
             # 切割列表
             new_conversation_history = conversation_history[:split_index]
             deleted_messages = conversation_history[split_index:]
@@ -205,19 +206,36 @@ class ForgetPlugin(Star):
 
             # 生成预览信息
             deleted_info = f"🗑️ 已删除 {round_count} 轮对话:\n\n"
-            for i in range(0, len(deleted_messages), 2):
-                if i+1 >= len(deleted_messages): break
-                
-                u_text = safe_extract_text(deleted_messages[i].get('content', ''))
-                a_text = safe_extract_text(deleted_messages[i+1].get('content', ''))
-                
-                # 截断预览（只显示前50个字）
-                u_show = u_text[:50].replace('\n', ' ') + ('...' if len(u_text)>50 else '')
-                a_show = a_text[:50].replace('\n', ' ') + ('...' if len(a_text)>50 else '')
-                
-                deleted_info += f"第 {i//2 + 1} 轮:\n"
-                deleted_info += f"👤: {u_show}\n"
-                deleted_info += f"🤖: {a_show}\n\n"
+            preview_rounds = []
+            current_round = None
+            for message in deleted_messages:
+                if not isinstance(message, dict):
+                    continue
+
+                role = message.get("role", "unknown")
+                text = safe_extract_text(message.get("content", ""))
+                if role == "user":
+                    if current_round:
+                        preview_rounds.append(current_round)
+                    current_round = {"user": text, "assistant": ""}
+                elif role == "assistant" and current_round is not None:
+                    if not text and message.get("tool_calls"):
+                        text = "[工具调用]"
+                    current_round["assistant"] = text
+
+            if current_round:
+                preview_rounds.append(current_round)
+
+            for i, preview_round in enumerate(preview_rounds, start=1):
+                u_text = preview_round["user"]
+                a_text = preview_round["assistant"]
+                u_show = u_text[:50].replace('\n', ' ') + ('...' if len(u_text) > 50 else '')
+                a_show = a_text[:50].replace('\n', ' ') + ('...' if len(a_text) > 50 else '')
+
+                deleted_info += f"第 {i} 轮:\n"
+                deleted_info += f"👤: {u_show or '[空内容]'}\n"
+                deleted_info += f"🤖: {a_show or '[未完成/已停止]'}\n\n"
+
             
             yield event.plain_result(
                 f"{deleted_info}💡 在下一条消息发送前，发送 /cancel_forget 可以恢复这些对话"
