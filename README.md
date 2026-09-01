@@ -18,6 +18,7 @@
 - **📚 帮助系统**: 完整的使用帮助和指令说明
 - **🚀 并发安全**: 引入异步锁机制，确保在高并发场景下的稳定运行，杜绝竞态条件。
 - **🛡️ RAG 兼容**: **(新)** 智能清洗 RAG/记忆插件注入的复杂数据，防止回显时报错或乱码。
+- **⏹️ `/stop` 兼容**: **(新)** 将被停止且没有 AI 回复的用户消息识别为独立轮次，避免与上一轮对话黏连。
 - **🛠️ 健壮设计**: **(新)** 采用全流程异常捕获与事件钩子，防止插件报错导致 LLM 误接管指令。
 
 ## 🚀 安装方法
@@ -142,6 +143,25 @@ AI: 📝 遗忘状态
 💡 发送 /cancel_forget 可以恢复这些对话
 ```
 
+#### 场景5：遗忘被 `/stop` 中断的消息
+
+AstrBot 在任务被 `/stop` 中断后，历史记录中可能只有用户消息，没有对应的 AI 回复。插件会将每条用户消息视为一轮的起点，因此中断消息不会与上一轮完整对话黏连：
+
+```
+用户: 问题1
+AI: 回复1
+用户: 问题1.5
+用户: /stop  ← 问题1.5 没有产生 AI 回复
+用户: /forget
+AI: 🗑️ 已删除 1 轮对话:
+
+第 1 轮:
+👤: 问题1.5
+🤖: [未完成/已停止]
+```
+
+此时“问题1/回复1”仍会保留。连续出现多条未完成用户消息时，`/forget N` 也会按最近的 N 条用户消息准确确定遗忘范围。
+
 ## 🔧 技术实现
 
 ### 核心原理
@@ -156,15 +176,22 @@ curr_cid = await conv_mgr.get_curr_conversation_id(unified_msg_origin)
 conversation = await conv_mgr.get_conversation(unified_msg_origin, curr_cid)
 ```
 
-### 批量删除算法
+### 轮次识别与批量删除算法
 
-使用智能算法查找和删除多轮对话：
+AstrBot 的历史不一定严格按照 `user → assistant` 两条一组排列：`/stop` 可能留下没有 assistant 的 user，Agent 也可能在一轮内插入 tool 消息。因此插件以每条 user 消息作为一轮起点，从末尾定位最近的 N 个 user 起点并切割历史：
 
 ```python
-def find_conversation_rounds(self, conversation_history: List[dict], round_count: int):
-    """从后往前查找指定数量的用户-助手对话轮次"""
-    # 智能查找算法，确保删除正确的对话轮次
+user_indices = [
+    i
+    for i, message in enumerate(conversation_history)
+    if isinstance(message, dict) and message.get("role") == "user"
+]
+split_index = user_indices[-round_count]
+new_history = conversation_history[:split_index]
+deleted_messages = conversation_history[split_index:]
 ```
+
+这种方式可以同时处理完整的 `user → assistant` 轮次、被 `/stop` 中断的单条 user，以及包含 tool 消息的 Agent 对话。
 
 ## 🛠️ 配置选项
 
@@ -197,6 +224,17 @@ astrbot_plugin_forget/
 - 无额外第三方依赖
 
 ## 📝 更新日志
+
+### v1.1.7 (2026-09-01)
+-   **⏹️ `/stop` 兼容修复**:
+    -   修复 `/stop` 导致历史以未配对 user 结尾时，`/forget` 无法正确识别轮次的问题。
+    -   修复被停止的用户消息与上一轮完整的 user/assistant 对话黏连并被一起删除的问题。
+    -   改为以每条 user 消息作为独立轮次起点，兼容连续 user 和 Agent tool 消息。
+-   **✨ 回显优化**:
+    -   保持原有“第 N 轮 / 👤 / 🤖”预览风格。
+    -   被停止且没有 assistant 回复的消息显示为“未完成/已停止”。
+-   **🔧 会话历史兼容**:
+    -   不再依赖历史消息数量的奇偶性，增强非标准历史结构下的轮次定位能力。
 
 ### v1.1.6 (2026-1-25)
 -   **🐛 严重Bug修复**:
