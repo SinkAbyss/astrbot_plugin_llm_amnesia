@@ -1,18 +1,19 @@
-from astrbot.api.event import filter, AstrMessageEvent
-from astrbot.api.star import Context, Star, register
-from astrbot.api import logger
-from astrbot.api.provider import ProviderRequest
 import asyncio
-from typing import Dict, List
-from datetime import datetime, timedelta
 import json
 from dataclasses import dataclass
+from datetime import datetime, timedelta
+
+from astrbot.api import logger
+from astrbot.api.event import AstrMessageEvent, filter
+from astrbot.api.provider import ProviderRequest
+from astrbot.api.star import Context, Star, register
+
 
 # --- 1. 数据结构定义 ---
 @dataclass
 class DeletedRecord:
     """用于存储被临时删除的对话记录"""
-    messages: List[dict]       # 被删除的消息列表
+    messages: list[dict]       # 被删除的消息列表
     conversation_id: str       # 对话ID
     timestamp: datetime        # 删除时间
     round_count: int           # 累计删除的轮次数
@@ -28,7 +29,7 @@ class ForgetPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
         # 存储结构：{unified_msg_origin: {user_id: DeletedRecord}}
-        self.deleted_conversations: Dict[str, Dict[str, DeletedRecord]] = {}
+        self.deleted_conversations: dict[str, dict[str, DeletedRecord]] = {}
         # 并发锁
         self.lock = asyncio.Lock()
         # 后台清理任务
@@ -44,14 +45,14 @@ class ForgetPlugin(Star):
             except asyncio.CancelledError:
                 logger.info("清理任务被取消")
                 break
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 logger.error(f"清理任务出错: {e}")
                 await asyncio.sleep(60)
 
     async def cleanup_expired_deletions(self):
         """(并发安全) 清理过期的删除记录"""
         async with self.lock:
-            current_time = datetime.now()
+            current_time = datetime.now()  # noqa: DTZ005
             # 遍历副本以安全修改
             for unified_msg_origin, user_deletions in list(self.deleted_conversations.items()):
                 for user_id, record in list(user_deletions.items()):
@@ -113,7 +114,7 @@ class ForgetPlugin(Star):
                     if isinstance(conversation_history, str):
                         logger.warning("检测到数据库存在双重序列化数据，正在自动修复...")
                         conversation_history = json.loads(conversation_history)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 logger.error(f"历史记录解析严重错误: {e}")
                 yield event.plain_result("对话历史格式异常，无法操作 ❌")
                 return
@@ -130,12 +131,11 @@ class ForgetPlugin(Star):
                 msg_curr = conversation_history[i]
                 msg_prev = conversation_history[i-1]
                 
-                if isinstance(msg_curr, dict) and isinstance(msg_prev, dict):
-                    if msg_curr.get("role") == "assistant" and msg_prev.get("role") == "user":
-                        rounds_found += 1
-                        if rounds_found == round_count:
-                            split_index = i - 1
-                            break
+                if isinstance(msg_curr, dict) and isinstance(msg_prev, dict) and msg_curr.get("role") == "assistant" and msg_prev.get("role") == "user":
+                    rounds_found += 1
+                    if rounds_found == round_count:
+                        split_index = i - 1
+                        break
             
             if split_index == len(conversation_history):
                 yield event.plain_result(f"只找到了 {rounds_found} 轮可遗忘的对话 ❌")
@@ -160,7 +160,7 @@ class ForgetPlugin(Star):
                     self.deleted_conversations[unified_msg_origin][user_id] = DeletedRecord(
                         messages=merged_messages,
                         conversation_id=conversation.cid,
-                        timestamp=datetime.now(),
+                        timestamp=datetime.now(),  # noqa: DTZ005
                         round_count=merged_round_count
                     )
                     logger.info(f"叠加遗忘记录：共 {merged_round_count} 轮")
@@ -169,7 +169,7 @@ class ForgetPlugin(Star):
                     self.deleted_conversations[unified_msg_origin][user_id] = DeletedRecord(
                         messages=deleted_messages,
                         conversation_id=conversation.cid,
-                        timestamp=datetime.now(),
+                        timestamp=datetime.now(),  # noqa: DTZ005
                         round_count=round_count
                     )
 
@@ -198,7 +198,8 @@ class ForgetPlugin(Star):
                         text_buffer = content_obj
                     else:
                         text_buffer = str(content_obj)
-                except Exception:
+                except Exception as e:  # noqa: BLE001
+                    logger.error(f"提取文本时发生错误: {e}")
                     return "[内容解析失败]"
                 return text_buffer.strip()
 
@@ -222,11 +223,11 @@ class ForgetPlugin(Star):
                 f"{deleted_info}💡 在下一条消息发送前，发送 /cancel_forget 可以恢复这些对话"
             )
             
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.error(f"遗忘对话严重错误: {e}")
             import traceback
             logger.error(traceback.format_exc())
-            yield event.plain_result(f"插件执行出错 ❌: {str(e)}")
+            yield event.plain_result(f"插件执行出错 ❌: {e}")
 
     @filter.command("cancel_forget")
     async def cancel_forget(self, event: AstrMessageEvent):
@@ -261,8 +262,10 @@ class ForgetPlugin(Star):
                     conversation_history = json.loads(conversation.history)
                     if isinstance(conversation_history, str):
                          conversation_history = json.loads(conversation_history)
-                except:
-                    pass
+                except Exception as e:  # noqa: BLE001
+                    logger.error(f"恢复对话时解析历史记录失败: {e}")
+                    yield event.plain_result("恢复对话时历史记录格式异常 ❌")
+                    return
             
             # 拼接恢复
             restored_conversation_history = conversation_history + record_to_restore.messages
@@ -279,9 +282,9 @@ class ForgetPlugin(Star):
                 f"✅ 已恢复 {record_to_restore.round_count} 轮被删除的对话\n\n对话已恢复到之前的状态"
             )
             
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.error(f"取消遗忘时出错: {e}")
-            yield event.plain_result(f"恢复对话时出现错误 ❌: {str(e)}")
+            yield event.plain_result(f"恢复对话时出现错误 ❌: {e}")
 
     @filter.command("forget_status")
     async def forget_status(self, event: AstrMessageEvent):
@@ -293,7 +296,7 @@ class ForgetPlugin(Star):
             async with self.lock:
                 record = self.deleted_conversations.get(unified_msg_origin, {}).get(user_id)
                 if record:
-                    time_ago = datetime.now() - record.timestamp
+                    time_ago = datetime.now() - record.timestamp  # noqa: DTZ005
                     minutes_ago = int(time_ago.total_seconds() / 60)
                     
                     yield event.plain_result(
@@ -307,9 +310,9 @@ class ForgetPlugin(Star):
                 else:
                     yield event.plain_result("没有待恢复的遗忘记录 ✅")
                 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.error(f"查看遗忘状态时出错: {e}")
-            yield event.plain_result(f"查看状态时出错 ❌: {str(e)}")
+            yield event.plain_result(f"查看状态时出错 ❌: {e}")
 
     @filter.command("forget_help")
     async def forget_help(self, event: AstrMessageEvent):
