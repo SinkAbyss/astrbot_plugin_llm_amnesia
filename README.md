@@ -219,8 +219,8 @@ astrbot_plugin_forget/
 ```
 
 ### 依赖要求
-- AstrBot v3.0+
-- Python 3.8+
+- AstrBot v4.28.0+
+- Python 3.12+
 - 无额外第三方依赖
 
 ## 📝 更新日志
